@@ -877,6 +877,24 @@ class Upgrade:
         return (old_data != f"{self.__dict__}")
 
 
+# AMS slot indices as used by print.ams_mapping and the cloud amsDetailMapping are sparse:
+# regular AMS units occupy 0-15 (four trays each) while AMS HT units are 128-135 (one tray each).
+AMS_SLOT_COUNT = 16
+AMS_HT_SLOT_BASE = 128
+AMS_HT_SLOT_COUNT = 8
+AMS_PRINT_SLOT_COUNT = AMS_HT_SLOT_BASE + AMS_HT_SLOT_COUNT
+
+
+def ams_slot_name(index: int) -> str | None:
+    """Human readable name for an AMS slot index, or None if the index isn't a real slot."""
+    if 0 <= index < AMS_SLOT_COUNT:
+        return f"AMS {(index // 4) + 1} Tray {(index % 4) + 1}"
+    if AMS_HT_SLOT_BASE <= index < AMS_PRINT_SLOT_COUNT:
+        # An AMS HT holds a single spool so there is no tray to disambiguate.
+        return f"AMS HT {index - AMS_HT_SLOT_BASE + 1}"
+    return None
+
+
 @dataclass
 class PrintJob:
     """Return all information related content"""
@@ -922,8 +940,8 @@ class PrintJob:
         self.print_error = 0
         self.print_weight = 0
         self.ams_mapping = []
-        self._ams_print_weights = [0.0] * 136 # TODO: Convert to a dict in the future?
-        self._ams_print_lengths = [0.0] * 136 # TODO: Convert to a dict in the future?
+        self._ams_print_weights = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
+        self._ams_print_lengths = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
         self.print_length = 0
         self.print_bed_type = "unknown"
         self.file_type_icon = "mdi:file"
@@ -956,11 +974,10 @@ class PrintJob:
         elif self._client._device.external_spool[1].active:
             values["External Spool 2"] = self.print_weight
         else:
-            for i in range(16):
-                if self._ams_print_weights[i] != 0:
-                    ams_index = (i // 4) + 1
-                    ams_tray = (i % 4) + 1
-                    values[f"AMS {ams_index} Tray {ams_tray}"] = self._ams_print_weights[i]
+            for index, weight in enumerate(self._ams_print_weights):
+                name = ams_slot_name(index)
+                if weight != 0 and name is not None:
+                    values[name] = weight
         return values
 
     @property
@@ -971,11 +988,10 @@ class PrintJob:
         elif self._client._device.external_spool[1].active:
             values["External Spool 2"] = self.print_length
         else:
-            for i in range(16):
-                if self._ams_print_lengths[i] != 0:
-                    ams_index = (i // 4) + 1
-                    ams_tray = (i % 4) + 1
-                    values[f"AMS {ams_index} Tray {ams_tray}"] = self._ams_print_lengths[i]
+            for index, length in enumerate(self._ams_print_lengths):
+                name = ams_slot_name(index)
+                if length != 0 and name is not None:
+                    values[name] = length
         return values
     
     @property
@@ -1710,8 +1726,8 @@ class PrintJob:
                 plate_filament_count = len(plate.findall('filament'))
 
                 # Reset filament data
-                self._ams_print_weights = [0.0] * 136 # TODO: Convert to a dict in the future?
-                self._ams_print_lengths = [0.0] * 136 # TODO: Convert to a dict in the future?
+                self._ams_print_weights = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
+                self._ams_print_lengths = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
 
                 for metadata in plate:
                     if (metadata.get('key') == 'index'):
@@ -1771,11 +1787,12 @@ class PrintJob:
                             # Filament count should be greater than the zero-indexed filament ID
                             if filament_count > filament_index:
                                 ams_index = self.ams_mapping[filament_index]
-                                if ams_index < 16: # BUG - This will not yet handle AMS HT devices
+                                ams_name = ams_slot_name(ams_index)
+                                if ams_name is not None:
                                     # We add the filament as you can map multiple slicer filaments to the same physical filament.
                                     self._ams_print_weights[ams_index] += float(metadata.get('used_g'))
                                     self._ams_print_lengths[ams_index] += float(metadata.get('used_m'))
-                                    log_label = f"AMS Tray {ams_index + 1}"
+                                    log_label = ams_name
                                 else:
                                     LOGGER.debug(f"ams_mapping: {self.ams_mapping}")
                             elif plate_filament_count > 0:
@@ -1880,8 +1897,8 @@ class PrintJob:
             return
 
         self._task_data = self._client.bambu_cloud.get_latest_task_for_printer(self._client._serial)
-        self._ams_print_weights = [0.0] * 136 # TODO: Convert to a dict in the future?
-        self._ams_print_lengths = [0.0] * 136 # TODO: Convert to a dict in the future?
+        self._ams_print_weights = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
+        self._ams_print_lengths = [0.0] * AMS_PRINT_SLOT_COUNT # TODO: Convert to a dict in the future?
         if self._task_data is None:
             LOGGER.debug("No bambu cloud task data found for printer.")
             self._client._device.cover_image.set_image(None)
@@ -1905,7 +1922,7 @@ class PrintJob:
                 for ams_data in ams_print_data:
                     index = ams_data['ams']
                     weight = ams_data['weight']
-                    if 0 <= index < len(self._ams_print_weights):
+                    if ams_slot_name(index) is not None:
                         self._ams_print_weights[index] = weight
                         self._ams_print_lengths[index] = self.print_length * weight / self.print_weight
                     else:

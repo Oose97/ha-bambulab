@@ -9,7 +9,7 @@ import json
 # Add the parent directory to the Python path to find pybambu
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from pybambu.models import PrintJob, Info, AMSList, Extruder, Fans, HMSList, PrintError, Temperature
+from pybambu.models import PrintJob, Info, AMSList, Extruder, Fans, HMSList, PrintError, Temperature, ams_slot_name
 from pybambu.const import FansEnum, Printers
 
 class TestPrintJob(unittest.TestCase):
@@ -31,6 +31,46 @@ class TestPrintJob(unittest.TestCase):
         self.assertEqual(self.print_job.remaining_time, 759)
         self.assertEqual(self.print_job.current_layer, 1)
         self.assertEqual(self.print_job.total_layers, 70)
+
+    def test_ams_slot_name(self):
+        # Regular AMS units occupy slots 0-15, four trays each.
+        self.assertEqual(ams_slot_name(0), "AMS 1 Tray 1")
+        self.assertEqual(ams_slot_name(3), "AMS 1 Tray 4")
+        self.assertEqual(ams_slot_name(4), "AMS 2 Tray 1")
+        self.assertEqual(ams_slot_name(15), "AMS 4 Tray 4")
+        # AMS HT units occupy slots 128-135, one spool each.
+        self.assertEqual(ams_slot_name(128), "AMS HT 1")
+        self.assertEqual(ams_slot_name(135), "AMS HT 8")
+        # Anything else is not a real slot - 255 is reported when no AMS is in use.
+        self.assertIsNone(ams_slot_name(16))
+        self.assertIsNone(ams_slot_name(127))
+        self.assertIsNone(ams_slot_name(136))
+        self.assertIsNone(ams_slot_name(255))
+        self.assertIsNone(ams_slot_name(-1))
+
+    def test_get_print_weights_includes_ams_ht(self):
+        self.client._device.external_spool[0].active = False
+        self.client._device.external_spool[1].active = False
+
+        self.print_job._ams_print_weights[1] = 12.5    # AMS 1 Tray 2
+        self.print_job._ams_print_weights[128] = 34.25 # AMS HT 1
+
+        self.assertEqual(
+            self.print_job.get_print_weights,
+            {"AMS 1 Tray 2": 12.5, "AMS HT 1": 34.25},
+        )
+
+    def test_get_print_lengths_includes_ams_ht(self):
+        self.client._device.external_spool[0].active = False
+        self.client._device.external_spool[1].active = False
+
+        self.print_job._ams_print_lengths[1] = 4.5    # AMS 1 Tray 2
+        self.print_job._ams_print_lengths[129] = 9.75 # AMS HT 2
+
+        self.assertEqual(
+            self.print_job.get_print_lengths,
+            {"AMS 1 Tray 2": 4.5, "AMS HT 2": 9.75},
+        )
 
 class TestInfo(unittest.TestCase):
     def setUp(self):
