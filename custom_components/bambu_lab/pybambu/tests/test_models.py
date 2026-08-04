@@ -38,11 +38,15 @@ class TestPrintJob(unittest.TestCase):
         self.assertEqual(ams_slot_name(3), "AMS 1 Tray 4")
         self.assertEqual(ams_slot_name(4), "AMS 2 Tray 1")
         self.assertEqual(ams_slot_name(15), "AMS 4 Tray 4")
-        # AMS HT units occupy slots 128-135, one spool each.
+        # AMS HT units follow on at slots 16-23, one spool each. Observed in a real
+        # amsDetailMapping entry pairing {'ams': 16} with {'amsId': 128, 'slotId': 0}.
+        self.assertEqual(ams_slot_name(16), "AMS HT 1")
+        self.assertEqual(ams_slot_name(23), "AMS HT 8")
+        # The AMS HT unit ids are also accepted, as reported by amsId and the active tray.
         self.assertEqual(ams_slot_name(128), "AMS HT 1")
         self.assertEqual(ams_slot_name(135), "AMS HT 8")
         # Anything else is not a real slot - 255 is reported when no AMS is in use.
-        self.assertIsNone(ams_slot_name(16))
+        self.assertIsNone(ams_slot_name(24))
         self.assertIsNone(ams_slot_name(127))
         self.assertIsNone(ams_slot_name(136))
         self.assertIsNone(ams_slot_name(255))
@@ -52,24 +56,25 @@ class TestPrintJob(unittest.TestCase):
         self.client._device.external_spool[0].active = False
         self.client._device.external_spool[1].active = False
 
-        self.print_job._ams_print_weights[1] = 12.5    # AMS 1 Tray 2
-        self.print_job._ams_print_weights[128] = 34.25 # AMS HT 1
+        # Mirrors a real two colour print across an AMS 2 Pro and an AMS HT.
+        self.print_job._ams_print_weights[3] = 1.38   # AMS 1 Tray 4
+        self.print_job._ams_print_weights[16] = 49.43 # AMS HT 1
 
         self.assertEqual(
             self.print_job.get_print_weights,
-            {"AMS 1 Tray 2": 12.5, "AMS HT 1": 34.25},
+            {"AMS 1 Tray 4": 1.38, "AMS HT 1": 49.43},
         )
 
     def test_get_print_lengths_includes_ams_ht(self):
         self.client._device.external_spool[0].active = False
         self.client._device.external_spool[1].active = False
 
-        self.print_job._ams_print_lengths[1] = 4.5    # AMS 1 Tray 2
-        self.print_job._ams_print_lengths[129] = 9.75 # AMS HT 2
+        self.print_job._ams_print_lengths[3] = 0.45   # AMS 1 Tray 4
+        self.print_job._ams_print_lengths[17] = 16.06 # AMS HT 2
 
         self.assertEqual(
             self.print_job.get_print_lengths,
-            {"AMS 1 Tray 2": 4.5, "AMS HT 2": 9.75},
+            {"AMS 1 Tray 4": 0.45, "AMS HT 2": 16.06},
         )
 
 class TestInfo(unittest.TestCase):
