@@ -921,6 +921,36 @@ AMS_HT_SLOT_END = AMS_HT_SLOT_BASE + AMS_HT_COUNT
 AMS_HT_UNIT_BASE = 128
 AMS_HT_UNIT_END = AMS_HT_UNIT_BASE + AMS_HT_COUNT
 
+# Characters that cannot appear in a file name on the printer's storage. The printer stores
+# each one in a model name as its hex code with the '%' dropped: a project called
+# "Hase / Osterhase" is saved as "Hase 2f Osterhase.gcode.3mf". The MQTT payload still
+# carries the original name, so the two have to be reconciled before they can be compared.
+FILENAME_ILLEGAL_CHARS = '/\\:*?"<>|'
+
+
+def encode_illegal_filename_chars(name: str) -> str:
+    """The spelling the printer uses on disk for a model name: illegal characters as lowercase hex."""
+    return ''.join(format(ord(c), '02x') if c in FILENAME_ILLEGAL_CHARS else c for c in name)
+
+
+def has_illegal_filename_chars(name: str) -> bool:
+    return any(c in FILENAME_ILLEGAL_CHARS for c in name)
+
+
+def model_name_pattern(name: str) -> re.Pattern:
+    """A pattern matching any on-disk spelling of a model name in which each illegal character
+    has been replaced by up to three characters (its hex code, an underscore, nothing, ...)."""
+    segments = re.split(f"[{re.escape(FILENAME_ILLEGAL_CHARS)}]", name)
+    return re.compile(".{0,3}".join(re.escape(segment) for segment in segments), re.IGNORECASE)
+
+
+def strip_model_extension(filename: str) -> str:
+    lowered = filename.lower()
+    for extension in ('.gcode.3mf', '.3mf'):
+        if lowered.endswith(extension):
+            return filename[:-len(extension)]
+    return filename
+
 
 def ams_slot_name(index: int) -> str | None:
     """Human readable name for an AMS slot index, or None if the index isn't a real slot."""
@@ -1435,11 +1465,17 @@ class PrintJob:
         filenames_to_try = []
 
         if self._subtask_name != '':
-            if self._subtask_name.endswith('.3mf'):
-                filenames_to_try.append(self._subtask_name)
-            else:
-                filenames_to_try.append(f"{self._subtask_name}.3mf")
-                filenames_to_try.append(f"{self._subtask_name}.gcode.3mf")
+            # The raw name is only worth trying when it could be a file name at all. One containing
+            # a path separator never is, and its truncated basename could match an unrelated file.
+            names = [] if '/' in self._subtask_name or '\\' in self._subtask_name else [self._subtask_name]
+            if has_illegal_filename_chars(self._subtask_name):
+                names.append(encode_illegal_filename_chars(self._subtask_name))
+            for name in names:
+                if name.endswith('.3mf'):
+                    filenames_to_try.append(name)
+                else:
+                    filenames_to_try.append(f"{name}.3mf")
+                    filenames_to_try.append(f"{name}.gcode.3mf")
 
         if (self.gcode_file != '') and (self._subtask_name != self.gcode_file):
             if self.gcode_file.endswith('.3mf'):
@@ -1487,6 +1523,22 @@ class PrintJob:
                 selected = sorted(matches, key=self._model_candidate_score, reverse=True)[0]
                 LOGGER.debug(
                     f"Selected model candidate {selected.path} from {selected.source}/{selected.storage}"
+                )
+                return self._remote_file_aliases(matches, selected)
+
+        if self._subtask_name != "" and has_illegal_filename_chars(self._subtask_name):
+            # The printer's substitution for the illegal characters is not the one we expected.
+            # Accept a file whose name matches the task name everywhere else.
+            pattern = model_name_pattern(self._subtask_name)
+            matches = [
+                file for file in remote_files
+                if pattern.fullmatch(strip_model_extension(file.basename))
+            ]
+            if matches:
+                selected = sorted(matches, key=self._model_candidate_score, reverse=True)[0]
+                LOGGER.debug(
+                    f"Matched task name '{self._subtask_name}' to {selected.path} from "
+                    f"{selected.source}/{selected.storage} by pattern"
                 )
                 return self._remote_file_aliases(matches, selected)
 

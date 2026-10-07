@@ -27,6 +27,9 @@ from pybambu.models import (
     ams_slot_name,
 )
 from pybambu.const import FansEnum, Printers
+from pybambu.media_sources import Ftps990MediaSource, RemoteMediaFile
+from pybambu.models import encode_illegal_filename_chars
+from datetime import timezone
 
 class TestPrintJob(unittest.TestCase):
     def setUp(self):
@@ -1007,3 +1010,95 @@ class TestFans(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestModelNameMatching(unittest.TestCase):
+    """Locating the 3mf when the model name contains characters that cannot appear in a file name."""
+
+    def setUp(self):
+        self.client = MagicMock()
+        self.print_job = PrintJob(self.client)
+
+    def remote(self, path, modified_hour=12):
+        return RemoteMediaFile(
+            name=path.rsplit("/", 1)[-1],
+            path=path,
+            size=954727,
+            media_type="model",
+            source=Ftps990MediaSource.name,
+            storage="external",
+            modified=datetime(2026, 9, 21, modified_hour, 0, tzinfo=timezone.utc),
+        )
+
+    def test_encode_illegal_filename_chars(self):
+        self.assertEqual(encode_illegal_filename_chars("Hase / Osterhase"), "Hase 2f Osterhase")
+        self.assertEqual(encode_illegal_filename_chars("Bracket 10/12mm"), "Bracket 102f12mm")
+        self.assertEqual(encode_illegal_filename_chars('A|B:C*D?E"F<G>H\\I'), "A7cB3aC2aD3fE22F3cG3eH5cI")
+        self.assertEqual(encode_illegal_filename_chars("dragon"), "dragon")
+
+    def test_name_with_slash_yields_encoded_candidates_and_no_truncated_ones(self):
+        self.print_job._subtask_name = "Bracket 10/12mm"
+        self.print_job.gcode_file = "/data/Metadata/plate_1.gcode"
+
+        candidates = self.print_job._model_filenames_to_try()
+
+        self.assertIn("Bracket 102f12mm.3mf", candidates)
+        self.assertIn("Bracket 102f12mm.gcode.3mf", candidates)
+        self.assertIn("/data/Metadata/plate_1.gcode.3mf", candidates)
+        self.assertFalse(any("Bracket 10/12mm" in candidate for candidate in candidates))
+        self.assertNotIn("12mm.3mf", candidates)
+
+    def test_name_with_other_illegal_chars_keeps_the_raw_spelling_too(self):
+        self.print_job._subtask_name = "Why?"
+        self.print_job.gcode_file = ""
+
+        candidates = self.print_job._model_filenames_to_try()
+
+        self.assertEqual(candidates, ["Why?.3mf", "Why?.gcode.3mf", "Why3f.3mf", "Why3f.gcode.3mf"])
+
+    def test_plain_name_candidates_are_unchanged(self):
+        self.print_job._subtask_name = "dragon"
+        self.print_job.gcode_file = "/data/Metadata/plate_1.gcode"
+
+        candidates = self.print_job._model_filenames_to_try()
+
+        self.assertEqual(
+            candidates,
+            ["dragon.3mf", "dragon.gcode.3mf", "/data/Metadata/plate_1.gcode.3mf", "/data/Metadata/plate_1.gcode.gcode.3mf"],
+        )
+
+    def test_selects_the_printers_encoded_file_for_a_name_with_a_slash(self):
+        self.print_job._subtask_name = "Hase / Osterhase"
+        self.print_job.gcode_file = "/data/Metadata/plate_1.gcode"
+        remote_files = [
+            self.remote("/cache/Other Model.gcode.3mf"),
+            self.remote("/cache/ Osterhase.gcode.3mf"),  # what the truncated basename used to match
+            self.remote("/cache/Hase 2f Osterhase.gcode.3mf"),
+        ]
+
+        selected = self.print_job._select_model_files(remote_files, self.print_job._model_filenames_to_try())
+
+        self.assertEqual([file.path for file in selected], ["/cache/Hase 2f Osterhase.gcode.3mf"])
+
+    def test_falls_back_to_a_pattern_match_for_an_unexpected_substitution(self):
+        self.print_job._subtask_name = "Bracket 10/12mm"
+        self.print_job.gcode_file = ""
+        remote_files = [
+            self.remote("/cache/Bracket 10mm.gcode.3mf"),
+            self.remote("/cache/Bracket 10_12mm.gcode.3mf"),
+            self.remote("/cache/Bracket 10-12mm v2.gcode.3mf"),
+        ]
+
+        selected = self.print_job._select_model_files(remote_files, self.print_job._model_filenames_to_try())
+
+        self.assertEqual([file.path for file in selected], ["/cache/Bracket 10_12mm.gcode.3mf"])
+
+    def test_plain_names_get_no_pattern_fallback(self):
+        # A plain name gets no pattern fallback, so an unrelated file is never picked up.
+        self.print_job._subtask_name = "dragon"
+        self.print_job.gcode_file = ""
+        remote_files = [self.remote("/cache/dragons.gcode.3mf"), self.remote("/cache/Dragon.gcode.3mf")]
+
+        selected = self.print_job._select_model_files(remote_files, self.print_job._model_filenames_to_try())
+
+        self.assertEqual(selected, [])
