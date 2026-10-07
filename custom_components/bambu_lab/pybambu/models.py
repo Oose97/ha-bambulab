@@ -5,6 +5,7 @@ import ftplib
 import json
 import math
 import os
+import html
 import re
 import threading
 import shutil
@@ -937,11 +938,39 @@ def has_illegal_filename_chars(name: str) -> bool:
     return any(c in FILENAME_ILLEGAL_CHARS for c in name)
 
 
+# Characters that commonly differ between a task name and the file it was saved as: a file copied
+# by hand often has underscores where the title has spaces.
+FILENAME_SEPARATOR_CHARS = " _-"
+
+
+def task_name_variants(name: str) -> list[str]:
+    """The task name as reported, plus the same with XML character references decoded. The firmware
+    copies a 3mf title into the MQTT task name verbatim, so a title containing & < > or quotes
+    arrives as &amp; &lt; &gt; &quot; while the file on disk carries the real characters."""
+    variants = [name]
+    decoded = html.unescape(name)
+    if decoded != name:
+        variants.append(decoded)
+    return variants
+
+
 def model_name_pattern(name: str) -> re.Pattern:
-    """A pattern matching any on-disk spelling of a model name in which each illegal character
-    has been replaced by up to three characters (its hex code, an underscore, nothing, ...)."""
-    segments = re.split(f"[{re.escape(FILENAME_ILLEGAL_CHARS)}]", name)
-    return re.compile(".{0,3}".join(re.escape(segment) for segment in segments), re.IGNORECASE)
+    """A pattern matching any on-disk spelling of a model name: each illegal character may have
+    been replaced by up to three characters (its hex code, an underscore, nothing, ...), runs of
+    spaces, underscores and hyphens are interchangeable, and case is ignored."""
+    parts = []
+    separator_pending = False
+    for char in name:
+        if char in FILENAME_SEPARATOR_CHARS:
+            separator_pending = True
+            continue
+        if separator_pending:
+            parts.append(f"[{re.escape(FILENAME_SEPARATOR_CHARS)}]+")
+            separator_pending = False
+        parts.append(".{0,3}" if char in FILENAME_ILLEGAL_CHARS else re.escape(char))
+    if separator_pending:
+        parts.append(f"[{re.escape(FILENAME_SEPARATOR_CHARS)}]*")
+    return re.compile("".join(parts), re.IGNORECASE)
 
 
 def strip_model_extension(filename: str) -> str:
@@ -1467,9 +1496,13 @@ class PrintJob:
         if self._subtask_name != '':
             # The raw name is only worth trying when it could be a file name at all. One containing
             # a path separator never is, and its truncated basename could match an unrelated file.
-            names = [] if '/' in self._subtask_name or '\\' in self._subtask_name else [self._subtask_name]
-            if has_illegal_filename_chars(self._subtask_name):
-                names.append(encode_illegal_filename_chars(self._subtask_name))
+            names = []
+            for task_name in task_name_variants(self._subtask_name):
+                if '/' not in task_name and '\\' not in task_name:
+                    names.append(task_name)
+                if has_illegal_filename_chars(task_name):
+                    names.append(encode_illegal_filename_chars(task_name))
+            names = list(dict.fromkeys(names))
             for name in names:
                 if name.endswith('.3mf'):
                     filenames_to_try.append(name)
@@ -1526,10 +1559,10 @@ class PrintJob:
                 )
                 return self._remote_file_aliases(matches, selected)
 
-        if self._subtask_name != "" and has_illegal_filename_chars(self._subtask_name):
-            # The printer's substitution for the illegal characters is not the one we expected.
-            # Accept a file whose name matches the task name everywhere else.
-            pattern = model_name_pattern(self._subtask_name)
+        if self._subtask_name != "":
+            # No candidate spelling matched. Accept a file whose name matches the task name once
+            # case, separators and the substitution of illegal characters are allowed to differ.
+            pattern = model_name_pattern(html.unescape(self._subtask_name))
             matches = [
                 file for file in remote_files
                 if pattern.fullmatch(strip_model_extension(file.basename))
