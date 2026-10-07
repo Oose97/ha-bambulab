@@ -1093,12 +1093,37 @@ class TestModelNameMatching(unittest.TestCase):
 
         self.assertEqual([file.path for file in selected], ["/cache/Bracket 10_12mm.gcode.3mf"])
 
-    def test_plain_names_get_no_pattern_fallback(self):
-        # A plain name gets no pattern fallback, so an unrelated file is never picked up.
+    def test_plain_name_fallback_tolerates_case_but_not_extra_text(self):
+        # FAT file names are case insensitive; a longer name is a different model.
         self.print_job._subtask_name = "dragon"
         self.print_job.gcode_file = ""
         remote_files = [self.remote("/cache/dragons.gcode.3mf"), self.remote("/cache/Dragon.gcode.3mf")]
 
         selected = self.print_job._select_model_files(remote_files, self.print_job._model_filenames_to_try())
 
-        self.assertEqual(selected, [])
+        self.assertEqual([file.path for file in selected], ["/cache/Dragon.gcode.3mf"])
+
+    def test_fallback_tolerates_underscores_for_spaces(self):
+        # A file copied by hand is often spelled with underscores where the title has spaces.
+        self.print_job._subtask_name = "PUMPKIN GHOST CLICKER"
+        self.print_job.gcode_file = ""
+        remote_files = [
+            self.remote("/PUMPKIN_GHOST_CLICKER_v2.gcode.3mf"),
+            self.remote("/PUMPKIN_GHOST_CLICKER.gcode.3mf"),
+        ]
+
+        selected = self.print_job._select_model_files(remote_files, self.print_job._model_filenames_to_try())
+
+        self.assertEqual([file.path for file in selected], ["/PUMPKIN_GHOST_CLICKER.gcode.3mf"])
+
+    def test_xml_character_references_in_the_task_name_are_decoded(self):
+        # The firmware copies a 3mf title into the task name verbatim, references included.
+        self.print_job._subtask_name = "Tom &amp; Jerry &lt;3"
+        self.print_job.gcode_file = ""
+        remote_files = [self.remote("/cache/Tom & Jerry 3c3.gcode.3mf")]
+
+        candidates = self.print_job._model_filenames_to_try()
+        selected = self.print_job._select_model_files(remote_files, candidates)
+
+        self.assertIn("Tom & Jerry 3c3.gcode.3mf", candidates)
+        self.assertEqual([file.path for file in selected], ["/cache/Tom & Jerry 3c3.gcode.3mf"])
