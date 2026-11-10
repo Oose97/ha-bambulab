@@ -373,7 +373,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, printer_coordinator=coordinator, interval_minutes=interval
         )
         hass.data[DOMAIN][f"{entry.entry_id}_filament"] = filament_coordinator
-        await filament_coordinator.async_config_entry_first_refresh()
+        # Not async_config_entry_first_refresh(): the inventory comes from the
+        # Bambu cloud, so a cloud failure (e.g. a Cloudflare block) must not keep
+        # a LAN-connected printer from loading. The sensor reports unavailable
+        # until a later poll succeeds.
+        await filament_coordinator.async_refresh()
 
     # Register file cache API endpoints
     hass.http.register_view(PrintHistoryAPIView(hass))
